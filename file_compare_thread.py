@@ -8,7 +8,7 @@
 import hashlib
 import os
 import posixpath
-import stat
+import time
 
 import paramiko
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -60,6 +60,7 @@ class FolderComparatorThread(QThread):
         连接到远程服务器。
         """
         try:
+            self.log_emit("连接服务器...")
             self.transport = paramiko.Transport((self.hostname, self.port))
             self.ssh = paramiko.SSHClient()
             self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -75,7 +76,7 @@ class FolderComparatorThread(QThread):
                 self.stop_signal.emit()
                 raise ValueError("请配置密码/密钥")
             self.sftp = paramiko.SFTPClient.from_transport(self.transport)
-            self.log_emit(f"连接服务器成功")
+            self.log_emit(f"连接服务器成功!")
         except Exception as e:
             self.log_emit(f"连接服务器失败: {e}")
             self.stop_signal.emit()
@@ -133,36 +134,6 @@ class FolderComparatorThread(QThread):
             self.stop_signal.emit()
             raise
 
-    def get_remote_md5(self, file_path, use_command=True):
-        """
-       计算远程文件的MD5哈希值。
-
-       :param file_path: 远程文件的路径。
-       :param use_command: True通过SSH使用命令获取md5,False 读取远程文件计算md5
-       :return: 文件的MD5哈希值。
-       """
-        if use_command:
-            command = f"md5sum {file_path}"
-            result = self.execute_command(command)
-            if result:
-                md5_hash = result.split()[0]  # 直接取结果的第一个部分
-                return md5_hash
-            else:
-                self.log_emit(f"Failed to calculate remote MD5 by command for {file_path}")
-                self.stop_signal.emit()
-                raise
-        else:
-            hash_md5 = hashlib.md5()
-            try:
-                with self.sftp.open(file_path, "rb") as f:
-                    for chunk in iter(lambda: f.read(4096), b""):
-                        hash_md5.update(chunk)
-                return hash_md5.hexdigest()
-            except Exception as e:
-                self.log_emit(f"Failed to calculate remote MD5 by read file for {file_path}: {e}")
-                self.stop_signal.emit()
-                raise
-
     def should_ignore_folder(self, folder_path):
         """
         检查文件夹是否需要忽略
@@ -173,7 +144,8 @@ class FolderComparatorThread(QThread):
             return False
 
         # 清理路径
-        clean_path = folder_path.replace(self.local_folder, '').replace(self.remote_folder, '').replace('\\', '/').lstrip('/')
+        clean_path = folder_path.replace(self.local_folder, '').replace(self.remote_folder, '').replace('\\',
+                                                                                                        '/').lstrip('/')
         if clean_path == '':
             return False
 
@@ -220,8 +192,9 @@ class FolderComparatorThread(QThread):
                     full_path = os.path.join(root, file)
                     relative_path = os.path.relpath(full_path, local_folder)
                     md5 = self.get_md5(full_path)
-                    files_list.append((full_path, relative_path, md5))
+                    files_list.append((full_path, relative_path.replace('\\', '/'), md5))
                     self.log_emit(f"获取本地文件 {relative_path}")
+                    time.sleep(0.0001)
             return files_list
         except Exception as e:
             self.log_emit(f"Failed to list all files in {local_folder}: {e}")
@@ -230,33 +203,38 @@ class FolderComparatorThread(QThread):
 
     def get_all_remote_files(self, remote_folder):
         """
-        获取远程文件夹中所有文件的列表。
+        获取远程文件夹中所有文件的列表
+        通过拼接shell命令，一次性获取指定文件夹下所有文件的md5
+        排除了指定文件夹和指定文件类型
 
         :param remote_folder: 远程文件夹的路径。
         :return: 文件的全路径和相对路径的元组列表。
         """
         files_list = []
 
-        def recursive_list(path):
-            try:
-                for entry in self.sftp.listdir_attr(path):
-                    full_path = posixpath.join(path, entry.filename)
-                    if self.should_ignore_folder(entry.filename):
-                        continue
-                    if stat.S_ISDIR(entry.st_mode):
-                        recursive_list(full_path)
-                    else:
-                        if self.should_ignore_file(entry.filename):
-                            continue
-                        relative_path = os.path.relpath(full_path, remote_folder)
-                        md5 = self.get_remote_md5(full_path, use_command=True)
-                        files_list.append((full_path, relative_path, md5))
-                        self.log_emit(f"获取远程文件 {relative_path}")
-            except Exception as e:
-                self.log_emit(f"Failed to list all remote files in {path}: {e}")
-                raise
+        command = f'find {remote_folder} -type f'
+        if self.ignore_folders:
+            for folder in self.ignore_folders:
+                if folder.startswith('**/'):
+                    command += f' ! -path "*/{folder[3:]}/*"'
+                else:
+                    command += f' ! -path "{self.remote_folder}/{folder}/*"'
 
-        recursive_list(remote_folder)
+        if self.ignore_file_types:
+            for file in self.ignore_file_types:
+                command += f' ! -name "*.{file}"'
+        command += ' -exec md5sum {} \;'
+
+        self.log_emit('获取远程文件...')
+        results = self.execute_command(command=command)
+        if results:
+            for line in results.split('\n'):
+                parts = line.split()
+                if len(parts) == 2:
+                    relative_path = parts[1].replace(self.remote_folder, '').lstrip('/')
+                    files_list.append((parts[1], relative_path, parts[0]))
+
+        self.log_emit('获取远程文件完毕')
         return files_list
 
     def create_remote_dir(self, remote_directory):
@@ -378,7 +356,7 @@ class FolderComparatorThread(QThread):
 
                 data = {
                     'type': 'refresh',
-                    'path': relative_path.replace('\\', '/'),
+                    'path': relative_path,
                     'local_file': local_file_path,
                 }
                 if local_file_path and remote_file_path:
@@ -393,7 +371,7 @@ class FolderComparatorThread(QThread):
                 elif local_file_path:
                     # 只有本地有此文件
                     data['change'] = 'local'
-                    data['remote_file'] = posixpath.join(self.remote_folder, relative_path.replace('\\', '/'))
+                    data['remote_file'] = posixpath.join(self.remote_folder, relative_path)
                     change_count += 1
                     self.data_signal.emit(data)
                 else:
@@ -404,7 +382,7 @@ class FolderComparatorThread(QThread):
                     self.data_signal.emit(data)
         finally:
             self.disconnect()
-            self.log_emit(f'刷新完毕，共有 {change_count} 个文件需要上传')
+            self.log_emit(f'刷新完毕，共有 {change_count} 个文件需要处理')
 
     def run(self):
         if self.flag == 'refresh':
