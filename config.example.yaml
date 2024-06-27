@@ -1,0 +1,17 @@
+servers:
+  - name: 服务器名称
+    hostname: IP地址
+    port: 端口号
+    username: 用户名
+    password: 密码(密码密钥二选一)
+    key_file_path: 密钥(密码密钥二选一)
+    local_folder: 本地文件夹
+    remote_folder: 远程文件夹
+  - name: 服务器名称
+    hostname: IP地址
+    port: 端口号
+    username: 用户名
+    password: 密码(密码密钥二选一)
+    key_file_path: 密钥(密码密钥二选一)
+    local_folder: 本地文件夹
+    remote_folder: 远程文件夹
