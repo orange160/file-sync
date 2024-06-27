@@ -95,7 +95,7 @@ class MainWindow(QMainWindow):
 
     def load_servers(self):
         try:
-            with open("config.yaml", "r") as file:
+            with open("config.yaml", "r", encoding='utf-8') as file:
                 self.config = yaml.safe_load(file)
                 for server in self.config["servers"]:
                     self.server_combo.addItem(server["name"])
@@ -112,10 +112,14 @@ class MainWindow(QMainWindow):
             password = current_server.get("password")
             local_folder = current_server.get("local_folder")
             remote_folder = current_server.get("remote_folder")
+            ignore_folders = current_server.get("ignore_folders")
+            ignore_file_types = current_server.get("ignore_file_types")
 
             self.worker = FolderComparatorThread(
                 server_name=server_name,
                 flag=flag,
+                ignore_folders=ignore_folders,
+                ignore_file_types=ignore_file_types,
                 changed_files=changed_files,
                 hostname=hostname,
                 port=port,

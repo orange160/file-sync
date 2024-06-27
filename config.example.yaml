@@ -7,6 +7,16 @@ servers:
     key_file_path: 密钥(密码密钥二选一)
     local_folder: 本地文件夹
     remote_folder: 远程文件夹
+    # 需要忽略的文件夹，文件夹路径相对于remote_folder，可以添加多个文件夹
+    # 格式1: **/__pycache__，统配所有文件夹下的__pycache__文件夹
+    # 格式2: static 或者 static/images，路径前不要有/，路径分隔符使用/
+    ignore_folders:
+      - "**/__pycache__"
+      - static
+    # 不需要同步的文件类型后缀
+    ignore_file_types:
+      - pyc
+
   - name: 服务器名称
     hostname: IP地址
     port: 端口号
@@ -15,3 +25,12 @@ servers:
     key_file_path: 密钥(密码密钥二选一)
     local_folder: 本地文件夹
     remote_folder: 远程文件夹
+    # 需要忽略的文件夹，文件夹路径相对于remote_folder，可以添加多个文件夹
+    # 格式1: **/__pycache__，统配所有文件夹下的__pycache__文件夹
+    # 格式2: static 或者 static/images，路径前不要有/，路径分隔符使用/
+    ignore_folders:
+      - "**/__pycache__"
+      - static
+    # 不需要同步的文件类型后缀
+    ignore_file_types:
+      - pyc

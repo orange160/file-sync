@@ -19,7 +19,7 @@ class FolderComparatorThread(QThread):
     stop_signal = pyqtSignal()
     data_signal = pyqtSignal(dict)
 
-    def __init__(self, server_name, flag, changed_files,
+    def __init__(self, server_name, flag, ignore_folders, ignore_file_types, changed_files,
                  hostname, port, username,
                  key_file_path=None, password=None, local_folder=None,
                  remote_folder=None):
@@ -41,6 +41,8 @@ class FolderComparatorThread(QThread):
         self.server_name = server_name
         self.flag = flag
         self.changed_files = changed_files
+        self.ignore_folders = ignore_folders
+        self.ignore_file_types = ignore_file_types
 
         self.hostname = hostname
         self.port = port
@@ -64,11 +66,13 @@ class FolderComparatorThread(QThread):
             elif self.password:
                 self.transport.connect(username=self.username, password=self.password)
             else:
-                raise ValueError("Either key_file_path or password must be provided")
+                self.stop_signal.emit()
+                raise ValueError("请配置密码/密钥")
             self.sftp = paramiko.SFTPClient.from_transport(self.transport)
             self.log_emit(f"连接服务器成功")
         except Exception as e:
             self.log_emit(f"连接服务器失败: {e}")
+            self.stop_signal.emit()
             raise
 
     def disconnect(self):
@@ -99,6 +103,7 @@ class FolderComparatorThread(QThread):
             return hash_md5.hexdigest()
         except Exception as e:
             self.log_emit(f"Failed to calculate MD5 for {file_path}: {e}")
+            self.stop_signal.emit()
             raise
 
     def get_remote_md5(self, file_path):
@@ -116,7 +121,47 @@ class FolderComparatorThread(QThread):
             return hash_md5.hexdigest()
         except Exception as e:
             self.log_emit(f"Failed to calculate remote MD5 for {file_path}: {e}")
+            self.stop_signal.emit()
             raise
+
+    def should_ignore_folder(self, folder_path):
+        """
+        检查文件夹是否需要忽略
+        :param folder_path: 文件夹路径
+        :return: True 需要忽略 False 不需要忽略
+        """
+        if not self.ignore_folders:
+            return False
+
+        # 清理路径
+        clean_path = folder_path.replace(self.local_folder, '').replace(self.remote_folder, '').replace('\\', '/').lstrip('/')
+        if clean_path == '':
+            return False
+
+        # 检查是否忽略文件夹
+        for f in self.ignore_folders:
+            if f.startswith('**/'):
+                single_folder = f[3:]
+                if single_folder in clean_path:
+                    return True
+            elif clean_path.startswith(f):
+                return True
+
+        return False
+
+    def should_ignore_file(self, file_path):
+        """
+        是否应该忽略文件
+        :param file_path: 文件路径
+        :return: True 需要忽略 False 不需要忽略
+        """
+        if not self.ignore_file_types:
+            return False
+
+        for file_type in self.ignore_file_types:
+            if file_path.endswith(f'.{file_type}'):
+                return True
+        return False
 
     def get_all_files(self, local_folder):
         """
@@ -128,10 +173,10 @@ class FolderComparatorThread(QThread):
         files_list = []
         try:
             for root, _, files in os.walk(local_folder):
-                if '__pycache__' in root:
+                if self.should_ignore_folder(root):
                     continue
                 for file in files:
-                    if file.endswith('.pyc'):
+                    if self.should_ignore_file(file):
                         continue
                     full_path = os.path.join(root, file)
                     relative_path = os.path.relpath(full_path, local_folder)
@@ -141,6 +186,7 @@ class FolderComparatorThread(QThread):
             return files_list
         except Exception as e:
             self.log_emit(f"Failed to list all files in {local_folder}: {e}")
+            self.stop_signal.emit()
             raise
 
     def get_all_remote_files(self, remote_folder):
@@ -156,12 +202,12 @@ class FolderComparatorThread(QThread):
             try:
                 for entry in self.sftp.listdir_attr(path):
                     full_path = posixpath.join(path, entry.filename)
-                    if entry.filename == '__pycache__':
+                    if self.should_ignore_folder(entry.filename):
                         continue
                     if stat.S_ISDIR(entry.st_mode):
                         recursive_list(full_path)
                     else:
-                        if entry.filename.endswith('.pyc'):
+                        if self.should_ignore_file(entry.filename):
                             continue
                         relative_path = os.path.relpath(full_path, remote_folder)
                         md5 = self.get_remote_md5(full_path)
@@ -257,11 +303,8 @@ class FolderComparatorThread(QThread):
                     remote_file = file['remote_file']
                     relative_path = file['path']
 
-                    print(file)
                     flag = None
-                    if change == 'not_same':
-                        flag = self.upload_file(local_file, remote_file)
-                    elif change == 'local':
+                    if change == 'not_same' or change == 'local':
                         flag = self.upload_file(local_file, remote_file)
                     elif change == 'remote':
                         flag = self.remove_remote_file_and_empty_dirs(remote_file)
@@ -326,7 +369,6 @@ class FolderComparatorThread(QThread):
 
     def run(self):
         if self.flag == 'refresh':
-            print('refresh now')
             self.refresh_files()
         elif self.flag == 'sync':
             self.sync_files()
