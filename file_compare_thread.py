@@ -50,6 +50,7 @@ class FolderComparatorThread(QThread):
         self.key_file_path = key_file_path
         self.password = password
         self.sftp = None
+        self.ssh = None
         self.transport = None
         self.local_folder = local_folder
         self.remote_folder = remote_folder
@@ -60,11 +61,16 @@ class FolderComparatorThread(QThread):
         """
         try:
             self.transport = paramiko.Transport((self.hostname, self.port))
+            self.ssh = paramiko.SSHClient()
+            self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
             if self.key_file_path:
                 key = paramiko.RSAKey.from_private_key_file(self.key_file_path)
                 self.transport.connect(username=self.username, pkey=key)
+                self.ssh.connect(self.hostname, port=self.port, username=self.username, pkey=key)
             elif self.password:
                 self.transport.connect(username=self.username, password=self.password)
+                self.ssh.connect(self.hostname, port=self.port, username=self.username, password=self.password)
             else:
                 self.stop_signal.emit()
                 raise ValueError("请配置密码/密钥")
@@ -81,12 +87,33 @@ class FolderComparatorThread(QThread):
         """
         if self.sftp:
             self.sftp.close()
+        if self.ssh:
+            self.ssh.close()
         if self.transport:
             self.transport.close()
 
     def log_emit(self, msg):
         clean_msg = msg.replace(self.remote_folder, '').replace(self.local_folder, '').replace('\\', '/')
         self.log_signal.emit(f'{self.server_name}, {clean_msg}')
+
+    def execute_command(self, command):
+        """
+        通过SSH执行命令
+        :param command: 要执行的命令
+        :return: 命令的输出结果
+        """
+        try:
+            stdin, stdout, stderr = self.ssh.exec_command(command)
+            output = stdout.read().decode()
+            error = stderr.read().decode()
+
+            if error:
+                self.log_emit(f"命令执行错误: {error}")
+
+            return output
+        except Exception as e:
+            self.log_emit(f"命令执行失败: {e}")
+            return None
 
     def get_md5(self, file_path):
         """
@@ -106,23 +133,35 @@ class FolderComparatorThread(QThread):
             self.stop_signal.emit()
             raise
 
-    def get_remote_md5(self, file_path):
+    def get_remote_md5(self, file_path, use_command=True):
         """
        计算远程文件的MD5哈希值。
 
        :param file_path: 远程文件的路径。
+       :param use_command: True通过SSH使用命令获取md5,False 读取远程文件计算md5
        :return: 文件的MD5哈希值。
        """
-        hash_md5 = hashlib.md5()
-        try:
-            with self.sftp.open(file_path, "rb") as f:
-                for chunk in iter(lambda: f.read(4096), b""):
-                    hash_md5.update(chunk)
-            return hash_md5.hexdigest()
-        except Exception as e:
-            self.log_emit(f"Failed to calculate remote MD5 for {file_path}: {e}")
-            self.stop_signal.emit()
-            raise
+        if use_command:
+            command = f"md5sum {file_path}"
+            result = self.execute_command(command)
+            if result:
+                md5_hash = result.split()[0]  # 直接取结果的第一个部分
+                return md5_hash
+            else:
+                self.log_emit(f"Failed to calculate remote MD5 by command for {file_path}")
+                self.stop_signal.emit()
+                raise
+        else:
+            hash_md5 = hashlib.md5()
+            try:
+                with self.sftp.open(file_path, "rb") as f:
+                    for chunk in iter(lambda: f.read(4096), b""):
+                        hash_md5.update(chunk)
+                return hash_md5.hexdigest()
+            except Exception as e:
+                self.log_emit(f"Failed to calculate remote MD5 by read file for {file_path}: {e}")
+                self.stop_signal.emit()
+                raise
 
     def should_ignore_folder(self, folder_path):
         """
@@ -210,7 +249,7 @@ class FolderComparatorThread(QThread):
                         if self.should_ignore_file(entry.filename):
                             continue
                         relative_path = os.path.relpath(full_path, remote_folder)
-                        md5 = self.get_remote_md5(full_path)
+                        md5 = self.get_remote_md5(full_path, use_command=True)
                         files_list.append((full_path, relative_path, md5))
                         self.log_emit(f"获取远程文件 {relative_path}")
             except Exception as e:
